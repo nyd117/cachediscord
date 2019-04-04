@@ -1,0 +1,47 @@
+!_TAG_FILE_FORMAT	2	/extended format; --format=1 will not append ;" to lines/
+!_TAG_FILE_SORTED	1	/0=unsorted, 1=sorted, 2=foldcase/
+!_TAG_OUTPUT_MODE	u-ctags	/u-ctags or e-ctags/
+!_TAG_PROGRAM_AUTHOR	Universal Ctags Team	//
+!_TAG_PROGRAM_NAME	Universal Ctags	/Derived from Exuberant Ctags/
+!_TAG_PROGRAM_URL	https://ctags.io/	/official site/
+!_TAG_PROGRAM_VERSION	0.0.0	/45968eff/
+Platform	src/cachediscord	887;"	p
+Platform::is_os_type	src/cachediscord	950;"	s
+Platform::os_type	src/cachediscord	944;"	s
+SET_ENV_NEWLINE	src/cachediscord	119;"	s
+SET_ENV_PLATFORM	src/cachediscord	106;"	s
+SET_ENV_SHELL	src/cachediscord	111;"	s
+build_dir_tree	src/cachediscord	822;"	s
+build_filename	src/cachediscord	815;"	s
+build_pathname	src/cachediscord	805;"	s
+build_structure_hashes	src/cachediscord	79;"	s
+check_module	src/cachediscord	724;"	s
+cleanse	src/cachediscord	644;"	s
+construct_save_filename	src/cachediscord	608;"	s
+convert	src/cachediscord	363;"	s
+cprint	src/cachediscord	733;"	s
+download	src/cachediscord	455;"	s
+dumpHash	src/cachediscord	839;"	s
+error_handler	src/cachediscord	744;"	s
+execute_options	src/cachediscord	58;"	s
+extract	src/cachediscord	299;"	s
+fetch_file	src/cachediscord	546;"	s
+fetch_udepth_hash_value	src/cachediscord	585;"	s
+get_URIs	src/cachediscord	284;"	s
+get_linecount	src/cachediscord	233;"	s
+get_names	src/cachediscord	189;"	s
+get_options	src/cachediscord	126;"	s
+incrementImage	src/cachediscord	687;"	s
+is_os_type	src/cachediscord	950;"	s
+load_html_files	src/cachediscord	165;"	s
+main	src/cachediscord	42;"	s
+mapFile	src/cachediscord	264;"	s
+os_type	src/cachediscord	944;"	s
+prettybytes	src/cachediscord	597;"	s
+process_html_files	src/cachediscord	202;"	s
+progress	src/cachediscord	653;"	s
+rstring	src/cachediscord	681;"	s
+set_enviroment_vars	src/cachediscord	98;"	s
+set_paths	src/cachediscord	90;"	s
+show_help	src/cachediscord	855;"	s
+show_version	src/cachediscord	877;"	s

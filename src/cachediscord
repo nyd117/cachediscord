@@ -110,7 +110,7 @@ sub SET_ENV_PLATFORM
 
 sub SET_ENV_SHELL
 {
-	if ($GVARS{PLATFORM} eq 'MSWin32')
+	if ($GVARS{PLATFORM} eq 'Windows')
 		{$GVARS{SHELL} = q((dir 2>&1 *`|echo CMD);&<# rem #>echo PowerShell);}
 	else
 		{$GVARS{SHELL} = $ENV{SHELL};}
@@ -118,7 +118,7 @@ sub SET_ENV_SHELL
 
 sub SET_ENV_NEWLINE
 {
-	if ($GVARS{PLATFORM} eq "MSWin32"){$GVARS{NEWLINE} = "\r\n"; $GVARS{CAR_RETURN} = "\r";}#grapse determine platform
+	if ($GVARS{PLATFORM} eq "Windows"){$GVARS{NEWLINE} = "\r\n"; $GVARS{CAR_RETURN} = "\r";}#grapse determine platform
 	elsif ($GVARS{PLATFORM} eq "linux"){$GVARS{NEWLINE} = "\n";}
 	else{$GVARS{NEWLINE} = "\n";}#whatever
 }
@@ -234,7 +234,7 @@ sub get_linecount
 {
 	my $relP = shift;
 
-	if($GVARS{PLATFORM} eq 'MSWin32')
+	if($GVARS{PLATFORM} eq 'Windows')
 		{
 			if($GVARS{SHELL} eq 'CMD')
 			{
@@ -662,7 +662,7 @@ sub progress
 
 		print "Processing...".(int($lc/$tl *100))."%";
 		
-		if ($GVARS{PLATFORM} eq 'MSWin32')
+		if ($GVARS{PLATFORM} eq 'Windows')
 		{
 			print $GVARS{CAR_RETURN};
 		}
