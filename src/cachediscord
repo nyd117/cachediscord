@@ -1,0 +1,959 @@
+#!/usr/bin/env perl
+use strict;
+use warnings;
+use 5.008;
+use utf8;
+use Cwd;
+use open ':std', ':encoding(UTF-8)';
+use Time::HiRes 'gettimeofday', 'tv_interval';
+use Path::Tiny;
+use File::Find;
+# use LWP::Simple;
+# use LWP::UserAgent;
+use Digest::MD5;
+use Term::ANSIColor;
+use HTTP::Tiny qw( http );
+use autodie; # die if problem reading or writing a file
+use Tie::IxHash;
+use Getopt::Long qw(GetOptions);
+Getopt::Long::Configure ('bundling', 'no_ignore_case', 
+'no_getopt_compat', 'no_auto_abbrev','pass_through');
+
+use version; our $VERSION = version->parse("1.16.32");
+
+my %GVARS;
+my %options;
+## Flags
+my %execute;
+
+my %URIs;
+tie %URIs, 'Tie::IxHash';
+my @htmlfiles;
+my ($base_path,$load_uris_path);
+my $directory_tree;
+my %root_files;
+tie %root_files, 'Tie::IxHash';
+my %structure_root;
+tie %structure_root, 'Tie::IxHash';
+
+my %ENUM_URI_CATS;
+tie %ENUM_URI_CATS, 'Tie::IxHash';
+
+sub main
+{
+	set_enviroment_vars();
+
+	# use Data::Dumper;
+	# print Dumper(\%ENV);
+
+	cprint  ('Running '.$^O.', Platform is '.$GVARS{'PLATFORM'},"bold white underline on_blue");
+	get_options(@_);
+	set_paths();
+	build_dir_tree($directory_tree, $base_path);# an parameinoun global na vgoun apo ta args
+	build_structure_hashes();	
+	@htmlfiles = load_html_files();# if $execute{'EXTRACT'} || $execute{'CONVERT'} || $execute{'DOWNLOAD'};
+	execute_options();
+}
+
+sub execute_options
+{
+	my @names = get_names();
+	
+	if ($execute{'EXTRACT'})
+	{
+		print 'Running Extract:'.$GVARS{NEWLINE};
+		get_URIs(\@names);
+	}
+	if ($execute{'CONVERT'})
+	{
+		print 'Running Convert:'.$GVARS{NEWLINE};
+		process_html_files(\@names);
+	}
+	if ($execute{'DOWNLOAD'})
+	{
+		print 'Running Download:'.$GVARS{NEWLINE};
+		download(\@names);
+	}
+}
+
+sub build_structure_hashes
+{
+	foreach my $subject (keys %{ %$directory_tree{$base_path} }) 
+	{    
+		unless (ref ${$directory_tree}{$base_path}{$subject} eq ref{})
+        	{$root_files{$subject} = ${$directory_tree}{$base_path}{$subject};}
+		elsif ($subject =~ /^(Images|Files|)$/)
+			{$structure_root{$subject} = ${$directory_tree}{$base_path}{$subject};}
+	}
+}
+
+sub set_paths
+{
+	$base_path = getcwd()."/";
+	$load_uris_path = "./output/";
+	if ($execute{'input'}){$base_path=$execute{'input'}};
+	if ($execute{'load-uris'}){$load_uris_path=$execute{'load-uris'}};
+}
+
+sub set_enviroment_vars
+{
+	SET_ENV_PLATFORM();
+	SET_ENV_SHELL();
+	SET_ENV_NEWLINE();
+
+}
+
+sub SET_ENV_PLATFORM
+{
+	$GVARS{PLATFORM} = Platform::os_type();
+}
+
+sub SET_ENV_SHELL
+{
+	if ($GVARS{PLATFORM} eq 'MSWin32')
+		{$GVARS{SHELL} = q((dir 2>&1 *`|echo CMD);&<# rem #>echo PowerShell);}
+	else
+		{$GVARS{SHELL} = $ENV{SHELL};}
+}
+
+sub SET_ENV_NEWLINE
+{
+	if ($GVARS{PLATFORM} eq "MSWin32"){$GVARS{NEWLINE} = "\r\n"; $GVARS{CAR_RETURN} = "\r";}#grapse determine platform
+	elsif ($GVARS{PLATFORM} eq "linux"){$GVARS{NEWLINE} = "\n";}
+	else{$GVARS{NEWLINE} = "\n";}#whatever
+}
+
+sub get_options
+{
+    my (@args) = @_;
+	$options{'short'} = 1;
+	GetOptions (
+		'h|help' => sub {
+			$execute{'HELP'} = 1;},
+    	'd|download|' => sub { 
+			$execute{'EXTRACT'} = 1;
+			$execute{'DOWNLOAD'} = 1;},
+		'm|hash|' => sub { 
+			$execute{'HASH'} = 1;},
+		'e|extract|' => sub { 
+			$execute{'EXTRACT'} = 1;},
+		'c|convert|' => sub { 
+			$execute{'CONVERT'} = 1;},
+		'v|verbose|' => sub { 
+			$execute{'VERBOSE'} = 1 },
+		'V|version|' => sub { 
+			$execute{'VERSION'} = 1 },
+		'C|COLORS|' => sub { 
+			$execute{'COLORS'} = 1 },
+		'load-uris:s' => sub {
+			my ($opt,$arg) = @_;
+			if (-e $arg and -d $arg){$execute{'load-uris'} = $arg;}
+			else {error_handler('inv-dirpath',$opt,$arg);} },
+		'input:s' => sub {
+			my ($opt,$arg) = @_;
+			if (-e $arg and -d $arg){$execute{'input'} = $arg;}
+			else {error_handler('inv-dirpath',$opt,$arg);} },
+		'<>' => sub {
+			my ($opt) = @_;
+			error_handler('unknown-option', "$opt", "" ); }
+        ) ;
+	## run all these after so that we can change widths, downloaders, etc
+	show_version() if $execute{'VERSION'};
+	show_help() if $execute{'HELP'};
+}
+
+sub load_html_files
+{
+	my $htmlFilesPath ;
+	if ($execute{'load-html-from-file'})
+	{
+		$htmlFilesPath = "./output/htmlFiles";
+		print $GVARS{NEWLINE}."Proceeding to load htmlFiles from input array:".$GVARS{NEWLINE};
+		print 'Path is '.$htmlFilesPath.$GVARS{NEWLINE};
+		@htmlfiles = mapFile($htmlFilesPath);#peritto kofto afou to eleg3eis
+	}
+	else
+	{
+		$htmlFilesPath = $base_path;
+		print $GVARS{NEWLINE}."Proceeding to detect htmlFiles in '$base_path'".$GVARS{NEWLINE};
+		foreach my $filename (keys %root_files)
+		{
+			if ($filename =~ /^.*(.html)$/)
+			{push @htmlfiles, $filename;}
+		}
+	}
+	return @htmlfiles;
+}
+
+#pass names file path
+sub get_names
+{
+# 	my $namesFilePath = "./output/names";
+# 	my @names = mapFile($namesFilePath);
+my @names;
+	for(@htmlfiles)
+	{
+		$_ =~ s/.html/""/ge;
+		push @names, $_;
+	} 	
+    return sort @names;
+}
+
+sub process_html_files
+{
+	my @names = @{$_[0]};
+	foreach(@names)
+	{
+		my $relP = build_filename($_,"html");
+		print $GVARS{NEWLINE}.$relP.$GVARS{NEWLINE};
+
+		my $dir = path($base_path);
+		$dir->touchpath;
+		my $file_out = $dir->child("./result/OUT_".$_.".html");
+		$file_out->touchpath;
+		my $file_handle_out = $file_out->openw_utf8();
+		my $file_in = $dir->child($relP);
+		my $file_handle_in;
+
+		push my @linecount, get_linecount($relP);#alla3e to auto to prama opws einai grammeno einai peritto to array teleiws
+
+		eval { $file_handle_in = $file_in->openr_utf8(); } or error_handler('file-open', $relP, "");
+
+		if (-e $relP)
+		{
+			my $currentlinecount = (shift @linecount);
+			print "Exists: ".$relP." lines : ".$currentlinecount."";
+			my $loadingmark = 0;
+			convert($relP,$currentlinecount,$file_handle_in,$file_handle_out,$loadingmark); 
+		}
+		else { print "File '".$relP."' does not exist.".$GVARS{NEWLINE}; }
+	}
+}
+
+sub get_linecount
+{
+	my $relP = shift;
+
+	if($GVARS{PLATFORM} eq 'MSWin32')
+		{
+			if($GVARS{SHELL} eq 'CMD')
+			{
+				my $pipe = q(\c \v);
+				return `type $relP | find $pipe ""`;
+			}
+			elsif($GVARS{SHELL} eq 'PowerShell')
+			{
+				return `(gc "$relP" | MeasureObject).Count`;
+			}
+			else
+			{
+				error_handler('unknown-shell',$GVARS{SHELL},"");
+			}
+			
+		}
+		elsif($GVARS{PLATFORM} eq 'Unix')
+		{
+			return `(wc -l <\"$relP\") 2> /dev/null 2>&1`;
+		}
+		else
+		{
+			error_handler('unknown-platform',$GVARS{PLATFORM},"");
+		}
+}
+
+sub mapFile
+{
+	my $path = shift;
+	my $handle;
+
+	unless (open $handle, "<:encoding(utf8)", $path)
+	{
+   		print STDERR "Could not open file '$path': ".$!.$GVARS{NEWLINE};
+   		# we return 'undefined', we could also 'die' or 'croak'
+   		return undef
+	}
+	chomp(my @lines = <$handle>);
+	unless (close $handle)
+	{
+   		# what does it mean if close yields an error and you are just reading?
+   		print STDERR "Don't care error while closing '$path': ".$!.$GVARS{NEWLINE};
+	} 
+	return  sort @lines;
+}
+
+sub get_URIs
+{
+	my @lines = @{$_[0]};
+	foreach (@lines)
+    {
+        chomp $_;
+        my $html_file = $_;
+        #my @URIs_per_file = extract("./".$html_file)
+        my %temp = extract(build_pathname($base_path,$html_file,"html"));
+        $html_file =~ s/(.*).html$/$1/;
+        $html_file  =~ tr/\ /_/;
+        $URIs{$html_file} = \%temp; #auto to ref giati paizei diaforetiko se ka8e key?aka giati ola pane kala katalave
+	}
+}
+
+sub extract
+{
+    my $filename_in = shift;
+    my $filename_out = shift;
+    #$filename_in = "./Genesis - general.html";
+    $filename_out = "./epicTest";
+    my $fh;
+	eval{ $fh = path($filename_in)->openr_utf8} or error_handler('file-open',$filename_in,"");
+    path($filename_out)->remove;
+
+    my (%avatars, %image_attachments, %misc_links, %file_attachments);
+	tie %avatars,'Tie::IxHash';
+	tie %image_attachments,'Tie::IxHash';
+	tie %misc_links,'Tie::IxHash';
+	tie %file_attachments,'Tie::IxHash';
+    
+    print "Extracting URIs for file: '$filename_in'".$GVARS{NEWLINE};#List in different lines each task and progress use Curses or Term::ANSIScreen to do it elegantly
+    while (my $row = <$fh>)
+    {            
+        if ($row =~ m/.*<img.*src=\"(https:\/\/cdn\.discordapp\.com\/(?:avatars|embed).*)\".*/)
+        {
+            #path($filename_out)->append_utf8($1.$GVARS{NEWLINE});
+            chomp $1;
+            unless(exists($avatars{$1})){$avatars{$1} = 1;}
+            else{$avatars{$1}++}
+        } 
+        elsif ($row =~ m/.*<img.*src=\"(https:\/\/cdn\.discordapp\.com\/attachments.*)\".*/)
+        {
+            #path($filename_out)->append_utf8($1.$GVARS{NEWLINE});
+            chomp $1;
+            unless(exists($image_attachments{$1})){$image_attachments{$1} = 1;}
+            else{$image_attachments{$1}++}
+        }
+        #to count autwn den einai mono src opote den einai aparaithta duplicates\/
+        elsif ($row =~ m/<img.*src=\"((?!.*discordapp.*attachments|.*discordapp.*avatars).*\.(?:png|jpg|jpeg|gif).*)\".*/)
+        {
+            #print $1.$2.$3.$4."$GVARS{NEWLINE}";#profanws de 8elw print alla grapsimo sto arxeio afou sort kai uniq
+            chomp $1;
+            unless(exists($misc_links{$1})){$misc_links{$1} = 1;}
+            else{$misc_links{$1}++}
+        }
+        elsif ($row =~ m/.*<a.*href="(https:\/\/cdn\.discordapp\.com\/attachments\/(?!.*\.(?:jpeg|gif|png|jpg)).*)".*/)
+        {
+            chomp $1;
+            unless(exists($file_attachments{$1})){$file_attachments{$1} = 1; path($filename_out)->append_utf8($1.$GVARS{NEWLINE});}
+            else{$file_attachments{$1}++}
+        }
+    }
+    close $fh;
+
+    my %URIS;
+	tie %URIS, 'Tie::IxHash';
+
+
+	#ti grafw dw akrivws kofto peritto?
+    $URIS{'avatars'} = \%avatars;
+    $URIS{'image_attachments'} = \%image_attachments;
+    $URIS{'misc_links'} = \%misc_links;
+    $URIS{'file_attachments'} = \%file_attachments;
+
+    return %URIS;
+}
+
+# Read in line at a time
+sub convert
+{
+	my $relP = shift;
+	my $clinecount = shift;
+	my $file_handle_in = shift;
+	my $file_handle_out = shift;
+	my $loadingmark = shift;
+	my	@inc = (my $A=1,my $B=1,my $C=1,my $D=1,my $E=1,my $F=1);
+	chomp $clinecount;
+	$relP =~ s/ /"_"/ge;
+	$relP =~ s/.html/""/ge;
+	$relP .= "/";
+	print $relP;
+	my $linenumber=0;
+	my($v1,$v2,$v3,$v4);
+    my $start = [ gettimeofday() ];
+	while( my $line = $file_handle_in->getline() )
+	{
+		$linenumber++;
+
+		if ($line =~ m/<img.*src=\"|<a.*href\=\"/ )
+		{
+            			#avatars
+			if (($v1,$v2) = $line =~ m/(https:\/\/cdn\.discordapp\.com\/avatars\/.*\/)(.*)\"/)
+			{
+				#print $v1."$GVARS{NEWLINE}".$v2."$GVARS{NEWLINE}";
+				$line =~ s/$v1$v2/"..\/Images\/avatars\/".$relP.$v2/e;
+				#print $line;
+			}
+			#Misc Images
+			elsif (($v1,$v2,$v3,$v4) =  
+                    $line =~ m/.*=\"((?!.*discordapp.*attachments|.*discordapp.*avatars).*\.png.*)\".*|
+                                .*=\"((?!.*discordapp.*attachments|.*discordapp.*avatars).*\.jpg.*)\".*|
+                                .*=\"((?!.*discordapp.*attachments|.*discordapp.*avatars).*\.jpeg.*)\".*|
+                                .*=\"((?!.*discordapp.*attachments|.*discordapp.*avatars).*\.gif.*)\".*/x
+                    )
+			{
+				#my $tmp = s/.*\/\/.*\..*?\/(.*(.gif|.jpg|.jpeg|.png))/$1/ge;
+				#$tmp =~ s/\//"_"/ge;
+				my $desc = join ' ',  grep { defined && length $_ }
+				$v1,$v2,$v3,$v4;
+				#print $desc."$GVARS{NEWLINE}";
+				my ($resource1,$resource2,$resource3) = $line =~ m/.*\/\/.*\..*?\/(.*(.gif|.jpg|.jpeg|.png)(.*))\".*/;
+				#$resource1 =~ tr/\//_/;
+				$resource1 =~ tr/\=|\?|\//_/;
+				if (defined($resource3) && $resource3 ne "")
+				{
+					$resource3 =~ tr/\//_/;
+					$resource3 =~ tr/\=/_/;				
+				}
+				$line =~ s/(src|href)=\"((?!.*discordapp.*attachments|.*discordapp.*avatars).*\.png.*)\"|
+							(src|href)=\"((?!.*discordapp.*attachments|.*discordapp.*avatars).*\.jpg.*)\"|
+							(src|href)=\"((?!.*discordapp.*attachments|.*discordapp.*avatars).*\.jpeg.*)\"|
+							(src|href)=\"((?!.*discordapp.*attachments|.*discordapp.*avatars).*\.gif.*)\"/
+							"".rstring($1).rstring($3).rstring($5).rstring($7)."=\"..\/Images\/misc\/".$relP.$resource1.(($resource3 ne "")?$resource2:q{})."\""/xge;
+				chomp($resource1);
+				chomp($line);
+				if (defined($resource3) && $resource3 ne "")
+				{
+					#print "<ICI>".$line."</ICI>"."$GVARS{NEWLINE}";
+					#print "<SUCI>".$resource1."</SUCI>"."$GVARS{NEWLINE}";
+					#print "RES3    ".$resource3."     /RES3$GVARS{NEWLINE}";
+				}
+			}
+			#unknown Untitled in cdn.discordapp.com
+			elsif (($v1,$v2,$v3) = $line =~ m/=\"https:\/\/cdn\.discordapp\.com\/attachments.*.((unknown|Untitled)(\.png|\.jpg))/) #$1 olo $2 filename $3 suffix
+			{
+				$line =~ s/(src|href|)=\"https:\/\/cdn\.discordapp\.com\/attachments.*.((unknown|Untitled)(\.png|\.jpg))/$1."=\"..\/Images\/attachments\/".$relP.$3."_".incrementImage(\@inc,$1,$2).$4/ge;
+				#print $line;
+			}
+			#anything else regarding images in cdn.discordapp.com
+			elsif (($v1,$v2,$v3,$v4) = $line =~ m/(https:\/\/cdn\.discordapp\.com\/attachments\/.*\/)((.*)(.png|.jpeg|.jpg|.gif).*)\"/)
+			{
+				$line =~ s/$v1$v3$v4/"..\/Images\/attachments\/".$relP.$v3.$v4/e;
+				#print $line;
+			}
+			else
+			{
+                $line =~ s/"(https:\/\/cdn\.discordapp\.com\/attachments\/.*\/((?!.*(\.jpeg|\.gif|\.png|\.jpg)).*))"/"\"..\/Files\/attachments\/".$relP.$2."\""/ge;
+				$line =~ s/(<img.*src=\")(https:\/\/cdn\.discordapp\.com\/embed\/avatars\/)(.*)(".*>)/$1."..\/Images\/avatars\/".$relP.$3.$4/ge;
+			}
+		}
+
+		$loadingmark = progress($clinecount,$linenumber,$loadingmark);
+		$file_handle_out->print($line . $GVARS{NEWLINE});
+        
+	}
+    my $total_secs = tv_interval($start);
+    print "Done...Elapsed time: ".$total_secs.$GVARS{NEWLINE};
+	return
+}
+
+sub download
+{
+	my @names = @{$_[0]};
+    my $finenamePref1="unknown_";
+    my $finenamePref2="Untitled_";
+    my $filenameSub=".png";
+    my $filenameSub1=".jpg";
+    my $inc_unknown=0;
+    my $inc_Untitled=0;
+    my $inc_UntitledJ=0;
+
+	my %http_attrs = (
+		verify_SSL => 1 );
+
+    my $http = HTTP::Tiny->new(%http_attrs);
+	
+    foreach (@names)
+    {
+        chomp $_;
+        my $html_file = $_;
+        #$html_file =~ s/(.*).html$/$1/;
+        $html_file  =~ tr/\ /_/;
+
+		my %DLPATHS;
+		tie %DLPATHS, 'Tie::IxHash';
+        %DLPATHS = (
+            IM_AT => "./Images/attachments/$html_file/",
+            IM_AV => "./Images/avatars/$html_file/",
+            IM_MISC => "./Images/misc/$html_file/",
+            FI_AT => "./Files/attachments/$html_file/",
+        );
+
+		my %OUTPATHS;
+		tie %OUTPATHS, 'Tie::IxHash';
+        %OUTPATHS = (
+            $DLPATHS{IM_AT} => "./output/attachments_",
+            $DLPATHS{IM_AV} => "./output/unique_avatars_",
+            $DLPATHS{IM_MISC} => "./output/misc_links_",
+            $DLPATHS{FI_AT} => "./output/file_attachments_",
+        );
+
+		my %CAT_LABELS;
+		tie %CAT_LABELS, 'Tie::IxHash';
+		%CAT_LABELS = (
+			IM_AT => 'image_attachments',
+			IM_AV => 'avatars',
+			IM_MISC => 'misc_links',
+			FI_AT => 'file_attachments',
+		);
+
+        path($DLPATHS{IM_AT})->mkpath;
+        path($DLPATHS{IM_AV})->mkpath;
+        path($DLPATHS{IM_MISC})->mkpath;
+        path($DLPATHS{FI_AT})->mkpath;
+
+        print "Processing $html_file".$GVARS{NEWLINE};
+
+        my @dl_paths = keys %DLPATHS;
+
+        for my $dl_path (@dl_paths)
+        {
+			my $path = $DLPATHS{$dl_path};
+			if ($execute{"load-uris-from-file"})
+			{
+				my $open = $OUTPATHS{$path}.$html_file;
+				my $fh = path($open)->openr_utf8();
+				print $path.$GVARS{NEWLINE};
+				while(my $row = <$fh>)
+				{
+					fetch_file($row,$http,$path);    
+				} 
+				close $fh; 
+			}
+			else
+			{
+				# if ($html_file =~ /princess/)
+				# {
+					#print $html_file.$GVARS{NEWLINE};
+					my @uris = keys %{$URIs{$html_file}{$CAT_LABELS{$dl_path}}};
+					#my ($incA,$incB,$incC) = 0 x3;
+					my %increments = map {$_ => 0} qw{incA incB incC};
+					for my $uri (@uris)
+					{
+						fetch_file($uri,$http,$path,construct_save_filename($uri,$path,\%increments));
+					}
+				# }
+			} 
+        }   
+    }
+}
+
+sub fetch_file
+{
+    my $row = shift;
+    my $http = shift;
+    my $path = shift;#exoun shiftaristei vres kalutero fix tropo gia na mh mperdeuetai
+	my $filename = shift;
+
+	chomp $row;
+	#$row =~ m/.*\/(.*)$/;
+
+	my $save = $path.$filename;#edw 8elei th morfopoihsh pou exw kai styo sh kai oxi 3ero to filename
+	#do get action
+
+	unless (-e $save)#edw 8elei bool gia no clobber h not kai kopsimo 3anagrapsimo an 8elei clobber 
+	{
+		eval
+		{
+			my $response = $http->mirror($row,$save); 
+			if ($response->{success})
+			{ print "Downloaded $row. Status Code ".$response->{status}.$GVARS{NEWLINE}; }
+			else { print "Failed to download $row Status Code ".$response->{status}.$GVARS{NEWLINE}; };
+		}
+		or do
+		{
+			my $error = $@ || 'Unidentified failure';
+			print $error;
+		};
+	}
+	else
+	{   
+		#kane dunamika ta reason
+		push my @segments, $base_path;
+		my @words = split(/\//,$save);
+		shift @words;
+		push @segments, @words;
+		print "Skipping '$row'. Reason: Exists".$save.' '.prettybytes(fetch_udepth_hash_value(\%$directory_tree,@segments)).$GVARS{NEWLINE};
+	}
+}
+
+sub fetch_udepth_hash_value
+{
+	my $ref = shift;
+	my $key = shift;
+	my @remaining_path = @_;
+
+	return undef unless ref $ref;
+	return undef unless defined $ref->{$key};
+	return $ref->{$key} unless scalar @remaining_path;
+	return fetch_udepth_hash_value($ref->{$key}, @remaining_path);
+}
+
+sub prettybytes
+{
+	my $size = shift;
+	foreach ('Bytes','KiB','MiB','GiB','TiB','PiB')
+	{
+		return sprintf("%.2f",$size)." $_" if $size < 1024;
+		$size /= 1024;
+	}
+	return sprintf("%.2f",$size*6*1024)." Bytes" ;
+}
+
+sub construct_save_filename
+{
+	my $row = shift;
+	my $path = shift;
+	my ($increments) = @_; #get reference to the outter hash (@_ is remaining input arguments in sub hash is the last one)
+	my $filename = $row;
+	if ($path =~ /Files/)
+	{
+		my $i = 'dw';
+	}
+	if ($path =~ /.Images\/misc/)
+	{
+		$filename =~ s/.*\/\/.*\..*?\/(.*(.gif|.jpg|.jpeg|.png)(.*))/$1.(($3 ne "")?$2:q{})/e ;
+	}
+	else
+	{
+		$filename =~ s/^.*\/(.*)$/$1/;
+		if ($filename =~ /unknown.png/)
+		{
+			$increments->{incA}++;
+			$filename= "unknown_".%$increments{incA}.".png";
+		}
+		elsif ($filename =~ /Untitled.png/)
+		{
+			$increments->{incB}++;
+			$filename= "Untitled_".%$increments{incB}.".png";
+		}
+		elsif ($filename =~ /Untitled.jpg/)
+		{
+			$increments->{incC}++;
+			$filename= "Untitled_".%$increments{incC}.".jpg";
+		}
+	}
+	return cleanse($filename);
+}
+
+sub cleanse
+{
+	my $filename = shift;
+	$filename =~ tr/\//_/;
+	$filename =~ tr/\=/_/;
+	$filename =~ tr/\?/_/;
+	return $filename;
+}
+
+sub progress
+{
+	my $tl=shift;
+	my $lc=shift;
+	my $loadingmark=shift;
+	#print $tl." ".$lc."$GVARS{NEWLINE}";
+	#print "$GVARS{NEWLINE}";
+	if (int($lc/$tl *100) > $loadingmark)
+	{
+
+		print "Processing...".(int($lc/$tl *100))."%";
+		
+		if ($GVARS{PLATFORM} eq 'MSWin32')
+		{
+			print $GVARS{CAR_RETURN};
+		}
+		elsif ($GVARS{PLATFORM} eq 'Unix')
+		{
+			print $GVARS{NEWLINE};
+			print "\033[1A";  # move cursor one line up
+			print "\033[2K";
+		}
+		else{error_handler('unknown-platform',$GVARS{PLATFORM},"");}
+		$loadingmark++;
+	}
+	return $loadingmark;
+}
+
+sub rstring
+{
+	my $val = shift;
+	return defined($val)?$val:q{};
+}
+
+sub incrementImage
+{
+    my ($inc) = shift;#get reference to array
+	my $case = shift;
+	my $file = shift;
+	if ($case eq "src")
+	{
+		if ($file eq "unknown.png")
+		{
+            return @$inc[0]++;# manipulate referenced array
+		}
+		elsif ($file eq "Untitled.png")
+		{
+            return @$inc[1]++;
+		}
+		elsif ($file eq "Untitled.jpg")
+		{
+            return @$inc[2]++;
+		}
+	}
+	elsif ($case eq "href")
+	{
+		if ($file eq "unknown.png")
+		{
+            return @$inc[3]++;
+		}
+		elsif ($file eq "Untitled.png")
+		{
+            return @$inc[4]++;
+		}
+		elsif ($file eq "Untitled.jpg")
+		{
+            return @$inc[5]++;
+		}
+	}
+}
+
+sub check_module 
+{
+	my ($module) = @_;
+	my $b_present = 0;
+	eval "require $module";
+	$b_present = 1 if !$@;
+	return $b_present;
+}
+
+sub cprint
+{
+	local $Term::ANSIColor::AUTORESET = 1;
+	my $text = shift;
+	my $attrs = shift;
+	if($execute{COLORS})
+		{print colored($text,$attrs) , $GVARS{NEWLINE};}
+	else
+		{print $text.$GVARS{NEWLINE};}
+}
+
+sub error_handler
+{
+	my ($err, $one, $two) = @_;
+	my ($b_help,$b_recommends);
+	my ($b_exit,$errno) = (1,0);
+	my $message = do {
+		if ( $err eq 'empty' ) { 'empty value' }
+		elsif ( $err eq 'bad-arg' ) { 
+			$errno=10; $b_help=1; "Unsupported value: $two for option: $one" }
+		elsif ( $err eq 'bad-arg-int' ) { 
+			$errno=11; "Bad internal argument: $one" }
+		elsif ( $err eq 'option-feature-incomplete' ) { 
+			$errno=21; "Option: '$one' feature: '$two' has not been implemented yet." }
+		elsif ( $err eq 'unknown-option' ) { 
+			$errno=22; $b_help=1; "Unsupported option: $one" }
+		elsif ( $err eq 'unknown-platform'){
+			$errno=23; "Unsupported platform: $one"}
+		elsif ( $err eq 'unknown-shell'){
+			$errno=24; "Unsupported shell: $one"}
+		elsif ( $err eq 'file-open' ) { 
+			$errno=41; "The file: $one cannot be opened!" }
+		elsif ( $err eq 'file-read' ) { 
+			$errno=42; "The file: $one cannot be read!" }
+		elsif ( $err eq 'open-dir-failed' ) { 
+			$errno=43; "The directory: $one failed to open with error: $two" }
+		elsif ( $err eq 'inv-dirpath' ) { 
+			$errno=44; "The directory: $two does not exist." }
+		elsif ( $err eq 'inv-filepath' ) { 
+			$errno=45; "The file: $two does not exist." }
+		## Modules
+		elsif ( $err eq 'required-module' ) { 
+			$errno=80; $b_recommends=1; "The required $one Perl module is not installed:".$GVARS{NEWLINE}."$two" }
+		## DEFAULT
+		else {
+			$errno=255; "Error handler ERROR!! Unsupported options: $err!"}
+	};
+	print("Error $errno: $message".$GVARS{NEWLINE});
+	if ($b_help){
+		print("Check -h for correct parameters.".$GVARS{NEWLINE});
+	}
+	if ($b_recommends){
+		print("See --recommends for more information.".$GVARS{NEWLINE});
+	}
+	exit $errno if $b_exit;
+}
+
+# sub dirTreeHash {
+#   my $dir = shift;
+#   return unless (defined $dir && -d $dir);
+#   $dir =~ s#\\#/#g;    # Win32
+#   my $dirth = {};
+
+#   opendir(DIR, $dir) or error_handler("open-dir-failed",$dir,$!);
+#   my @files = grep {!/^\.\.?$/} readdir(DIR);
+#   closedir(DIR);
+#   map {$dirth->{$_} = (-d "$dir/$_" ? &dirTreeHash("$dir/$_") : '') unless (-l "$dir/$_")} @files;
+
+#   return $dirth;
+
+# }
+
+sub build_pathname
+{
+	my $path = shift;
+	my $filename = shift;
+	my $suffix = shift;
+
+	if ($path eq "."){$path .= $base_path;}
+	return $path.build_filename($filename,$suffix);#vale kana elegxo gia tuxon illegal chars
+}
+
+sub build_filename
+{
+	my $filename = shift;
+	my $suffix = shift;
+	return $filename.".".$suffix;
+}
+ 
+sub build_dir_tree 
+{
+	my $node = $_[0] = {};
+	my @s;
+	find( 
+		sub 
+		{
+			$node = (pop @s)->[1] while @s and $File::Find::dir ne $s[-1][0];
+			return $node->{$_} = -s if -f;
+			push @s, [ $File::Find::name, $node ];
+			$node = $node->{$_} = {};
+		}, $_[1]);
+		
+	$_[0]{$_[1]} = delete $_[0]{'.'};
+}
+
+#print dumpHash($directory_tree);
+sub dumpHash {
+    my ($element, $indent) = @_;
+    
+    $indent ||= '';
+    
+    return "$indent$element".$GVARS{NEWLINE} unless 'HASH' eq ref $element;
+    
+    my $str= '';
+    for my $key (sort keys %$element) {
+        $str .= "$indent$key =>".$GVARS{NEWLINE};
+        $str .= dumpHash ($element->{$key}, $indent . '    ');
+    }
+    
+    return $str;
+}
+
+sub show_help()
+{
+    print "When called without arguments cachediscord will perform the same as:".$GVARS{NEWLINE};
+    print "".$GVARS{NEWLINE};
+    print "cachediscord -ecdm".$GVARS{NEWLINE};
+    print "".$GVARS{NEWLINE};
+    print "cachediscord supports the following options:".$GVARS{NEWLINE};
+    print "".$GVARS{NEWLINE};
+    print "-h --help     : Show this help information".$GVARS{NEWLINE};
+    print "-V --version  : Show version information".$GVARS{NEWLINE};
+    print "-m --hash     : Pass all files through md5 checksum test".$GVARS{NEWLINE};
+    print "-e --extract  : Extract URIs corresponding to files for download from local html files".$GVARS{NEWLINE};
+    print "-c --convert  : Convert URIs to remote servers in local html files to local file paths".$GVARS{NEWLINE};
+    print "-d --download : Download URI target files if they have been previously extracted".$GVARS{NEWLINE};
+    print "-v --verbose  : Define verbosity of utility in stdout".$GVARS{NEWLINE};
+    print "                -v (0-8) | --verbose (0-8)".$GVARS{NEWLINE};
+    print "                     0 Same as cachediscord".$GVARS{NEWLINE};
+    print "                     TO BE ADDED".$GVARS{NEWLINE};
+    print "-C --colors   : Color output compliant with ANSI/VT100 terminal emulators".$GVARS{NEWLINE};
+    print "                Defaults to true if terminal emulator supports at least 8 colors".$GVARS{NEWLINE};
+}
+
+sub show_version()
+{
+    #major incompatible me previous version minor add functionality backwards compatible patch bugfixes
+    print "cachediscord $VERSION (2019-03-28)".$GVARS{NEWLINE};
+    print "Should I include a copyright here?".$GVARS{NEWLINE};
+    print "using Perl version: 5.8.0".$GVARS{NEWLINE};
+
+}
+
+{
+	package Platform;
+
+	my %OSTYPES = (
+		aix         	=> 'Unix',
+		bsdos       	=> 'Unix',
+		beos        	=> 'Unix',
+		bitrig      	=> 'Unix',
+		dgux        	=> 'Unix',
+		dragonfly   	=> 'Unix',
+		dynixptx    	=> 'Unix',
+		freebsd     	=> 'Unix',
+		linux       	=> 'Unix',
+		haiku       	=> 'Unix',
+		hpux        	=> 'Unix',
+		iphoneos    	=> 'Unix',
+		irix        	=> 'Unix',
+		darwin      	=> 'Unix',
+		machten     	=> 'Unix',
+		midnightbsd 	=> 'Unix',
+		minix       	=> 'Unix',
+		mirbsd      	=> 'Unix',
+		next        	=> 'Unix',
+		openbsd     	=> 'Unix',
+		netbsd      	=> 'Unix',
+		dec_osf     	=> 'Unix',
+		nto         	=> 'Unix',
+		svr4        	=> 'Unix',
+		svr5        	=> 'Unix',
+		sco         	=> 'Unix',
+		sco_sv      	=> 'Unix',
+		unicos      	=> 'Unix',
+		unicosmk    	=> 'Unix',
+		solaris     	=> 'Unix',
+		sunos       	=> 'Unix',
+		cygwin      	=> 'Unix',
+		msys        	=> 'Unix',
+		os2         	=> 'Unix',
+		interix     	=> 'Unix',
+		gnu         	=> 'Unix',
+		gnukfreebsd 	=> 'Unix',
+		nto         	=> 'Unix',
+		qnx         	=> 'Unix',
+		android     	=> 'Unix',
+		dos         	=> 'Windows',
+		MSWin32     	=> 'Windows',
+		os390      	=> 'EBCDIC',
+		os400      	=> 'EBCDIC',
+		qw(posix-bc)	=> 'EBCDIC',
+		vmesa      	=> 'EBCDIC',
+		MacOS     	=> 'MacOS',
+		VMS        	=> 'VMS',
+		vos        	=> 'VOS',
+		riscos     	=> 'RiscOS',
+		amigaos    	=> 'Amiga',
+		mpeix      	=> 'MPEiX',
+	);
+
+	sub os_type {
+		my ($os) = @_;
+		$os = $^O unless defined $os;
+		return $OSTYPES{$os} || q{};
+	}
+
+	sub is_os_type {
+		my ( $type, $os ) = @_;
+		return unless $type;
+		$os = $^O unless defined $os;
+		return os_type($os) eq $type;
+	}
+}
+
+main();
+
